@@ -1,0 +1,22 @@
+# 8月12日工作笔记
+## 一.ltc2991驱动编程
+
+####驱动中的unlikely()和likely()使用
+&emsp;首先来说:
+
+&emsp;&emsp;* if (likely(value))等价于if (value)
+&emsp;&emsp;* if (unlikely(value))等价于if(value)
+
+&emsp;&emsp;这两种写法在阅读和理解上是一致的
+
+&emsp;&emsp;likely()和unlikely()宏在内核中定义如下：
+
+	#define likely(x) __builtin_expect(!!(x), 1)
+	#define unlikely(x) __builtin_expect(!!(x), 0)
+	
+&emsp;&emsp;这里的__builtin_expect()函数是gcc(version >=2.96)的内建函数，将分支转移信息提供给编译器，然编译器对代码进行优化，减少指令跳转带来的性能下降
+
+	__buildin_expect((x), 1)表示x的值为真的可能性更大.
+	__buildin_expect((x), 0)表示x的值为假的可能性更大.
+
+&emsp;&emsp;** 也就是说，使用likely(),执行if后面的语句的机会更大，使用unlikely(),执行else后面的语句机会更大一些。通过这种方式，编译器在编译过程中，会将可能性更大的代码紧跟着后面的代码，从而减少指令跳转带来的性能上的下降。总之，likely和unlikely的功能就是添加cache的命中率，提高系统执行速度. **
