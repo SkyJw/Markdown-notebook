@@ -304,9 +304,15 @@
 
 ##### 1. 向链表中增加一个节点
 
-```
+```c
 list_add(struct list_head *new, struct list_head *head)
 ```
 
 ​	该函数向指定链表的head节点后面插入new节点。<font color=red>因为链表是循环的，而且通常没有首尾节点的概念，所以你可以把任何一个节点当成head。</font>
+
+##### 2. 从链表中删除一个节点
+
+```c
+list_del(struct list_head *entry)
+```
 
