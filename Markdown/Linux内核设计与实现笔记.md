@@ -312,7 +312,138 @@ list_add(struct list_head *new, struct list_head *head)
 
 ##### 2. 从链表中删除一个节点
 
-```c
 list_del(struct list_head *entry)
+
+​	该函数并不会释放entry节点所包含的数据结构占用的内存
+
+#### 6.1.6 遍历链表
+
+##### 1. 基本方法
+
+```c
+struct list_head *p;
+list_for_each(p, list) {
+		/* 具体操作 */
+		...
+}
 ```
+
+​	使用list_for_each()宏，该宏用起来和for循环差不多，小括号里面第一个参数是临时指针，类似与for循环里面的i，实时指向当前遍历到的链表节点，第二个参数是待遍历链表的链表头。
+
+​	遍历到链表节点时，因为单独的链表节点其实没有啥用，需要的是包含链表的结构体，所以需要使用如下方法获取到结构体指针：
+
+```c
+struct list_head *p;
+struct fox *f;
+
+list_for_each(p, &fox_list) {
+		/* list_entry()的三个参数，链表指针，包含链表的结构体，链表在结构体中的成员名 */
+		f = list_entry(p, struct fox, list);
+}
+```
+
+##### 2. 可用的方法
+
+```c
+struct fox *f;
+
+list_for_each_entry(f, &fox_list, list) {
+	/*  具体操作 */
+	....
+}
+```
+
+​	这种方法也就是将` list_for_each() `和` list_entry() `结合到了一起，只用填写临时指针、目标链表头、链表在数据结构体中的成员名。<font color=red>要注意的是，这里的临时指针不再是指向链表节点，而是直接指向了包含链表节点的结构体。</font>
+
+##### 3. 反向遍历链表
+
+```c
+list_for_each_entry_reverse(pos, head, member);
+```
+
+​	与上述遍历类似，只是不再从next方向去遍历，而是从prev方向去遍历。
+
+##### 4. 遍历的同时删除
+
+​	标准的方法是不能一边遍历一边删除的，需要使用 以下宏：
+
+```
+list_for_each_entry_safe(pos, next, head, member);
+```
+
+​	next指针用于临时存储指向下一个节点的指针。
+
+### 6.2 队列
+
+​	生产者消费者的模型，先入先出。内核中的队列实现为kfifo。
+
+#### 6.2.1 kfifo
+
+​	kfifo维护了两个偏移变量：入口偏移和出口偏移。即kfifo的in和out。出口偏移总是小于或者等于入口偏移。
+
+#### 6.2.2 创建队列
+
+​	和多数内核对象一样，有动态和静态方法，常用动态方法：
+
+```c
+int kfifo_alloc(struct kfifo *fifo, unsigned int size, gfp_t gfp_mask);
+```
+
+​	静态声明更加简单：
+
+```c
+DECLARE_KFIFO(name, size);
+INIT_KFIFO(name);
+```
+
+#### 6.2.3 推入队列数据
+
+```
+unsigned int kfifo_in(struct kfifo *fifo, const void *from, unsigned int len);
+```
+
+#### 6.2.4 摘取队列数据
+
+```c
+unsigned int kfifo_out(struct kfifo *fifo, void *to, unsigned int len);
+```
+
+不出队列获取数据方法：
+
+```c
+unsigned int kfifo_out_peek(struct kfifo *fifo, void *to, unsigned int len, unsigned offset);
+```
+
+#### 6.2.5 获取队列长度
+
+​	获取kfifo队列空间总大小：
+
+```c
+static inline unsigned int kfifo_size(struct kfifo *fifo);
+```
+
+​	获取队列使用长度：
+
+```c
+static inline unsigned int kfifo_len(struct kfifo *fifo);
+```
+
+​	获取队列空闲空间：
+
+```c
+static inline unsigned int kfifo_avail(struct kfifo *fifo);
+```
+
+​	判断队列是否满/空：
+
+```c
+static inline int kfifo_is_empty(struct kfifo *fifo);
+static inline int kfifo_is_full(struct kfifo *fifo);
+```
+
+#### 6.2.6 重置和撤销队列
+
+#### 6.2.7 队列使用举例
+
+### 6.3 映射
 
