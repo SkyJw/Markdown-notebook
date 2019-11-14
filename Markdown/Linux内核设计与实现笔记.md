@@ -838,3 +838,97 @@ void tasklet_handler(unsigned long data)
 ### 8.4 工作队列
 
 ​	工作队列是在进程上下文执行，所以工作队列执行的代码能够占尽进程上下文的所有优势，最重要的是工作队列允许重新调度甚至是睡眠(软中断和tasklet不可以)。
+
+#### 8.4.1 工作队列的实现
+
+​	工作队列其实是在内核中创建一个工作者线程，将在中断中需要推迟执行的工作，放到这个线程中进行。可以在驱动中创建这个线程，但内核中有一个缺省的工作队列进程。
+
+​	缺省的工作者线程叫做events/n，其中n是处理器编号，也就是说，每个处理器上都有一个这样的线程。驱动可以使用缺省线程，也可以自己创建线程。自己创建线程，可能性能会好一些
+
+##### 1. 表示线程的数据结构
+
+​	工作者线程用workqueue_struct结构来表示：
+
+```c
+struct workqueue_struct {
+	struct cpu_workqueue_struct cpu_wq[NR_CPUS];
+	struct list_head list;
+	const char *name;
+	int sinqlethread;
+	int freezeable;
+	int rt;
+};
+```
+
+​	结构中的数组cpu_wq中的每一项对应一个处理器。一台多核电脑，中的每一个工作者线程都会对应一个这样的cpu_workqueue_struct结构体，这个结构体是工作队列的核心数据结构：
+
+```c
+struct cpu_workqueue_struct {
+	spinlock_t lock; /* 保护此结构的锁 */
+	
+	struct list_head worklist; /* 工作列表 */
+	wait_queue_head_t more_work; /* 等待队列 */
+	struct work_struct *current_struct; /* 当前工作 */
+	
+	struct workqueue_struct *wq; /* 关联工作队列结构 */
+	task_t *thread; /* 关联线程 */
+};
+```
+
+​	<font color=blue>自己理解（不一定对）：内核中只有一个workqueue_struct结构，计算机中有几个核就有几个工作者线程，每个工作者线程就对应一个cpu_workqueue_struct结构，所有的这些cpu_workqueue_struct结构都会以数组形式存放在workqueue_struct中</font>
+
+​	<font color=red>更正：不止有一个workqueue_struct结构，内核默认有一个，驱动中可以创建自己的workqueue_struct</font>
+
+
+
+##### 2. 表示工作的数据结构
+
+​	所有的工作者线程都是普通的内核线程，在其中需要执行worker_thread()函数。这个函数初始化完成后，就会休眠，只到有工作插入到这个工作队列中，就被唤醒完成工作后继续休眠，周而复始。
+
+​	工作用<linux/workqueue.h>中定义的work_struct结构体表示：
+
+```c
+struct work_struct {
+	atomic_long_t data;
+	struct list_head entry;
+	work_func_t func;
+};
+```
+
+​	这些个结构体被连成链表，在每个处理器上的工作队列都有这么一个链表。当一个工作者线程被唤醒时，它就会执行链表上的所有工作。工作执行完毕时，工作就会从该链表移去。链表空时，工作者线程就会休眠
+
+​	worker_thread()函数的核心流程简化如下：
+
+```c
+for (;;) {
+    /* 先准备休眠，将自己加入等待队列，state设置为TASK_INTERRUPTIBLE */
+	prepare_to_wait(&cwq->more_work, &wait, TASK_INTERRUPTIBLE);
+    
+    /* 判断工作链表是否为空，为空则显示进行调度 */
+	if (list_empty(&cwq->worklist)) 
+		schedule();
+    
+    /* 有待进行的工作，结束休眠 */
+	finish_wait(&cwq->more_work, &wait);
+    
+    /* 进行工作 */
+	run_workqueue(cwq);
+}
+```
+
+​	接下来由run_workqueue()函数来实际完成推后到此的工作：
+
+```c
+while (!list_empty(&cwq->worklist)) {
+	struct work_struct *work;
+	work_func_t f;
+	void *data;
+	
+	work = list_entry(cwq->worklist.next, struct work_struct, entry);
+	f = work->func;
+	list_del_init(cwq->worklist.next);
+	work_clear_pending(work); /* 清理待处理标志位 */
+	f(work); /* 这里是错印吗，应该是data？或者还是之前的那种思想，便于添加额外参数？ */
+}
+```
+
