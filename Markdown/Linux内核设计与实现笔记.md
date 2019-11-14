@@ -706,3 +706,135 @@ void softirq_handler(struct softirq_action *);
 
 ### 8.3 tasklet
 
+#### 8.3.1 tasklet的实现
+
+​	tasklet由两类软中断代表：HI_SOFTIRQ/TASKLET_SOFTIRQ。两者唯一实际区别在于，HI_SOFTIRQ类型的软中断先于TASKLET_SOFTIRQ类型的软中断执行
+
+##### 1. tasklet结构体
+
+​	定义在<linux/interrupt.h>
+
+```c
+struct tasklet_struct {
+		struct tasklet_struct *next; /* 链表中的下一个tasklet */
+		unsigned long state;			  /* tasklet的状态 */
+		atomic_t count;						  /* 引用计数器 */
+		void (*func)(unsigned long); /* tasklet处理函数 */
+		unsigned long data;				  /* 给tasklet处理函数的参数 */
+};
+```
+
+state只有以下三种之一：
+
+- 0
+
+- TASKLET_STATE_SCHED
+
+  已被调度，正准备投入运行
+
+- TASKLET_STATE_RUN
+
+  正在运行
+
+​	count成员是tasklet的引用计数器，不为0，则tasklet被禁止
+
+##### 2. 调度tasklet
+
+​	已调度的tasklet（也就是已被上半部触发的tasklet），存放在两个单处理器数据结构tasklet_vec(对应普通tasklet)，tasklet_hi_vec(高优先级的tasklet)。这两个结构都是tasklet_struct组成的链表
+
+​	tasklet调度函数：tasklet_schedule()和tasklet_hi_schedule()，下面分析tasklet_schedule()的执行步骤：
+
+(1)  检查tasklet的状态是否为TASKLET_STATE_SCHED，如果是说明tasklet已经被调度（可能是被上半部触发过，但还没来得及执行），函数立即返回
+
+(2) 调用_tasklet_schedule()
+
+(3) 保存中断状态，然后禁止本地中断。
+
+(4) 把需要调度的tasklet加到每个处理器每一个tasklet_vec链表或tasklet_hi_vec链表的表头上去
+
+(5) 触发TASKLET_SOFTIRQ或HI_SOFTLRQ软中断，这样下次软中断的do_softirq()函数中，就会执行对应的软中断处理函数
+
+(6) 恢复中断到原状态并返回
+
+<font color=red>	为什么说tasklet是利用软中断实现的，这里就很好的说明了，软中断调度函数只是将tasklet放入到tasklet vec中，然后去触发软中断对应的标志，然后等待tasklet软中断的action函数中，去执行具体的tasklet任务</font>
+
+​	软中断中处理tasklet的action函数为tasklet_action()和tasklet_hi_action()对应两种tasklet，这两个action函数的主要做了如下操作：
+
+(1) 禁止中断，然后检索tasklet_vec或tasklet_hi_vec链表（也就是拷贝一份）
+
+(2) 将当前处理器上的该链表设置为NULL，达到清空的效果
+
+(3) 允许中断(<font color=red>思考：这里关闭中断的原因应该和软中断中获取软中断映射表时要关闭中断一样，是为了避免获取链表和清除链表直接发生中断，从而导致清理了不应该清理的中断，导致应该执行的tasklet不能得到执行。这样分析的话还有一个隐藏的推断，就是禁止中断不会使得实际的硬件中断丢失，而是在下次开启中断后再发送给系统，要不然这样就没有意义</font>)
+
+(4) 循环遍历获得链表上的每一个待处理的tasklet
+
+(5) 如果是多处理器，通过检查TASKLET_STATE_RUN来判断这个tasklet是否正在其他处理器上运行。如果它正在运行，那就不要执行，跳到下一个待处理的tasklet(前面有说过，相同的tasklet不能在不同的处理器上同时运行)
+
+(6) 如果当前的tasklet没有执行，将其状态设置为TASKLET_STATE_RUN，避免其他处理器执行
+
+(7) 检查count是否为0，确保tasklet没有被禁止，0为没有被禁止
+
+(8) 执行tasklet处理程序
+
+(9) 清除tasklet的TASKLET_STATE_RUN状态标志
+
+(10) 重复执行下一个tasklet，直至没有剩余的等待处理的tasklet
+
+#### 8.3.2 使用tasklet
+
+##### 1. 声明你自己的tasklet
+
+​	tasklet可以静态或者动态的创建，取决于对tasklet是直接引用还是间接引用
+
+(1) 静态创建
+
+```c
+DECLARE_TASKLET(name, func, data)
+DECLARE_TASKLET_DISABLED(name, func, data);
+```
+
+​	这两个宏，都可以静态的创建一个名叫name的tasklet，func对应tasklet处理函数，data为它的参数。两个宏区别在于，第一个定义之后tasklet处于激活状态，第二个会把count引用计数器设置为1，所以该tasklet处于禁止状态
+
+​	举个例子：
+
+```c
+DECLARE_TASKLET(my_tasklet, my_tasklet_handler, dev);
+```
+
+​	这行代码等价于：
+
+```c
+struct tasklet_struct my_tasklet = {NULL, 0, ATOMIC_INIT(0), my_tasklet_handler, dev};
+```
+
+(2) 动态创建
+
+​	这里书上讲的不太清楚，间接引用也就是用指针，用法如下：
+
+```c
+tasklet_init(t, tasklet_handler, dev);
+```
+
+​	应该t就是创建的tasklet指针
+
+##### 2. 编写你自己的tasklet处理程序
+
+​	tasklet处理程序有固定的形式，如下：
+
+```c
+void tasklet_handler(unsigned long data)
+```
+
+​	tasklet处理程序不能睡眠，即不能用信号量或其他会造成阻塞的函数。tasklet处理函数中，允许响应中断，所以必须做好预防工作（如屏蔽中断，然后获取一个锁）
+
+##### 3. 调度你自己的tasklet
+
+​	tasklet的调度，也就是触发或者说标记，就是告诉内核这个tasklet要运行。类似于触发中断，然后执行中断处理程序。tasklet的调度是使用显式的调度函数tasklet_schedule()，参数是想要运行的tasklet_struct指针。作为一种优化措施，一个tasklet总是在调度它的处理器上执行，这样是希望能更好的利用处理器的高速缓存。
+
+##### 4. ksoftirqd
+
+#### 8.3.3 老的BH机制
+
+### 8.4 工作队列
+
+​	工作队列是在进程上下文执行，所以工作队列执行的代码能够占尽进程上下文的所有优势，最重要的是工作队列允许重新调度甚至是睡眠(软中断和tasklet不可以)。
