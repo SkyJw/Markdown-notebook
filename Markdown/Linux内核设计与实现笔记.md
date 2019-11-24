@@ -932,3 +932,63 @@ while (!list_empty(&cwq->worklist)) {
 }
 ```
 
+##### 3. 对工作进行调度
+
+- 使用缺省的内核工作队列线程
+
+```c
+	schedule_work(&work);
+```
+
+- 延迟delay时钟节拍执行
+
+```c
+	schedule_delayed_work(&work, delay);
+```
+
+##### 4. 刷新操作
+
+​	在执行上述工作调度函数后，实际工作是在工作线程下一次唤醒时执行的。也就是说调度工作语句后面的代码时，工作可能尚未进行。有时候后面的代码需要工作执行后再继续，这就需要刷新操作，如下
+
+```
+	void flush_scheduled_work(void);
+```
+
+​	该函数会一直等待，直到工作队列中的所有对象都被执行后才返回，该函数会休眠
+
+##### 5. 创建新的工作队列
+
+​	创建新的工作队列会在每个处理器上都创建一个工作者线程，操作如下：
+
+```
+struct workqueue_struct *create_workqueue(const char *name);
+```
+
+​	创建好工作队列后，将工作放入其中不在使用3.中提到的函数，而是以下函数，区别在于下面的函数可以指定工作队列：
+
+```
+int queue_work(struct workqueue_struct * wq, struct work_struct *work);
+
+int queue_delayed_work(struct workqueue_struct *wq,
+					   struct work_struct *work,
+					   unsigned long delay);
+```
+
+​	刷新指定工作队列：
+
+```
+flush_workqueue(struct workqueue_struct *wq);
+```
+
+#### 8.4.3 老的任务队列机制
+
+### 8.5 下半部机制的选择
+
+​	2.6内核版本有三种机制：软中断,tasklet,工作队列
+
+​	软中断性能最高，但是不好操作，序列化保障少，可以在多个处理器同时处理同一个软中断，不可睡眠
+
+​	tasklet基于软中断实现，比软中断好操作，体现在接口简单，不同处理器不能同时处理同一个tasklet，性能比软中断低一些，不可睡眠
+
+​	工作队列运行于进程上下班，可以睡眠，工作队列开销最大，因为有内核线程甚至是上下文的切换
+
